@@ -1,0 +1,9 @@
+# uvx ruff check --fix ldm/data/gtex.py scripts/   (the compact style of AGENTS.md; upstream ZoomLDM code is not linted)
+target-version = "py312"
+line-length = 400
+extend-exclude = ["cdm_dit", "large_image_gen", "notebooks", "main.py", "utils.py", "ldm/models", "ldm/modules", "ldm/data/brca.py", "ldm/data/naip.py", "ldm/util.py", "ldm/lr_scheduler.py", "data", "runs"]
+[lint]
+select = ["E", "W", "F", "I", "UP", "B", "SIM", "RUF", "C4", "PIE", "RET", "PERF", "FURB"]
+ignore = ["E401", "C408", "SIM115", "E701", "E702", "E703", "E731", "E741", "SIM108", "RET505", "RET504", "B905", "RUF001", "RUF002", "RUF003"]
+[lint.isort]
+known-first-party = ["ldm"]

@@ -1,0 +1,37 @@
+[project]
+name = "zoomldm-uni"
+version = "0.1.0"
+description = "ZoomLDM training on GTEx UNI grids (ldm + PyTorch Lightning 1.9.5, torch 2.6 cu124, no xformers: it changes ldm's attention)"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+	"torch==2.6.0",
+	"torchvision==0.21.0",
+	"pytorch-lightning==1.9.5",
+	"setuptools<81",  # lightning_fabric 1.9 imports pkg_resources
+	"bitsandbytes==0.46.1",  # ldm/models/diffusion/ddpm.py imports it unguarded
+	"taming-transformers-rom1504",  # VQ-f4 quantizer
+	"omegaconf>=2.3",
+	"einops",
+	"h5py>=3.12",
+	"numpy>=2.2",
+	"pillow",
+	"tqdm",
+	"tensorboard",
+	"huggingface_hub",
+	# scripts/check_ckpts.py instantiates the old GTEx conditioner (tissue_zoom.generators.zoomldm, aging-zoom), which imports these
+	"pandas>=2.3",
+	"openslide-python",
+	"openslide-bin",
+]
+
+[tool.uv]
+package = false
+
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu124", marker = "sys_platform == 'linux'" }]
+torchvision = [{ index = "pytorch-cu124", marker = "sys_platform == 'linux'" }]
