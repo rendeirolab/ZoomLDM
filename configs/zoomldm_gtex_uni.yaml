@@ -1,0 +1,94 @@
+# ZoomLDM on GTEx with UNI conditioning: the released BRCA architecture (configs/zoomldm_brca.yaml: UNI 1024, no organ token) on the 56 x 56 GTEx latents.
+# Training starts from the released checkpoint (every tensor is shape-independent of the latent size); use_fp16 stays unset: the forward pass runs under bf16 autocast,
+# weights, gradients and optimizer state in fp32 (scripts/train_gtex_uni.py).
+model:
+  base_learning_rate: 5.0e-05
+  target: ldm.models.diffusion.ddpm.LatentDiffusion
+  params:
+    linear_start: 0.0015
+    linear_end: 0.0195
+    num_timesteps_cond: 1
+    log_every_t: 200
+    timesteps: 1000
+    first_stage_key: image
+    cond_stage_key: hybrid
+    image_size: 56
+    channels: 3
+    cond_stage_trainable: true
+    conditioning_key: crossattn
+    use_ema: true
+    x_feat_extracted: true
+    scheduler_config:
+      target: ldm.lr_scheduler.LambdaLinearScheduler
+      params:
+        warm_up_steps: [1000]
+        cycle_lengths: [10000000000000]
+        f_start: [1.0e-06]
+        f_max: [1.0]
+        f_min: [1.0]
+    unet_config:
+      target: ldm.modules.diffusionmodules.openaimodel.UNetModel
+      params:
+        use_checkpoint: false
+        image_size: 56
+        in_channels: 3
+        out_channels: 3
+        model_channels: 192
+        attention_resolutions: [8, 4, 2]
+        num_res_blocks: 2
+        channel_mult: [1, 2, 3, 5]
+        num_heads: 1
+        use_spatial_transformer: true
+        transformer_depth: 1
+        context_dim: 512
+    first_stage_config:
+      target: ldm.models.autoencoder.VQModelInterface
+      params:
+        embed_dim: 3
+        n_embed: 8192
+        ddconfig:
+          double_z: false
+          z_channels: 3
+          resolution: 256
+          in_channels: 3
+          out_ch: 3
+          ch: 128
+          ch_mult: [1, 2, 4]
+          num_res_blocks: 2
+          attn_resolutions: []
+          dropout: 0.0
+        lossconfig:
+          target: torch.nn.Identity
+    cond_stage_config:
+      target: ldm.modules.encoders.modules.EmbeddingViT2_5
+      params:
+        feat_key: ssl_feat
+        mag_key: mag
+        num_layers: 12
+        input_channels: 1024
+        hidden_channels: 512
+        vit_mlp_dim: 2048
+        p_uncond: 0.1
+init_ckpt: /home/smoustafa/Projects/aging-zoom/data/ckpt/zoomldm_brca/weights.ckpt   # released ZoomLDM-BRCA (brca/weights.ckpt)
+data:
+  batch_size: null        # per GPU; null = the largest that fits, probed at start (train_gtex_uni.py --probe), kept in runs/<name>/batch.json
+  num_workers: 20
+  prefetch_factor: 6        # batches each worker keeps ready
+  train:
+    target: ldm.data.gtex.GTExDataset
+    params:
+      config:
+        root: data/gtex-uni     # the sbatch script points this at the staged copy on /local
+        counts: data/gtex_counts.npz
+        slides: /home/smoustafa/Projects/aging-zoom/data/slides.csv   # donor split: training donors only (evaluation readers are fitted on the others)
+        split: train
+        feat_target_size: 8
+        normalize_ssl: true
+        seed: 0
+        run: 64                 # consecutive samples drawn from one open slide
+trainer:
+  max_steps: 100000
+  max_time: "02:22:00:00"   # DD:HH:MM:SS, under the 3-day limit of the gpu partition; a resubmitted job resumes from last.ckpt
+  log_every_n_steps: 50
+  ckpt_minutes: 30          # last.ckpt (resume)
+  keep_minutes: 360         # weights-only snapshots
