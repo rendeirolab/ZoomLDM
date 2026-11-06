@@ -1,6 +1,10 @@
 """ZoomLDM with UNI conditioning on GTEx windows (configs/zoomldm_gtex_uni.yaml), initialised from the released ZoomLDM-BRCA checkpoint, on every GPU of one node (DDP, one task per GPU).
 Out: runs/<name>/ (config.yaml, batch.json, tb/ event files, checkpoints/last.ckpt every ckpt_minutes and weights-only {step}.ckpt every keep_minutes); a resubmitted job resumes from last.ckpt.
-TensorBoard (tensorboard --logdir runs): train/loss_simple_step, lr, time/step_s, time/steps_per_h; the SLURM log gets the loss, the learning rate and steps/h every log_every_n_steps.
+TensorBoard (tensorboard --logdir runs): train/loss_simple_step, lr, time/step_s, time/steps_per_h, val/loss, val/loss_ema, time/val_s; the SLURM log gets the loss, the learning
+rate and steps/h every log_every_n_steps, and the held-out loss after each validation.
+Held-out loss: data.validation, a fixed set of windows of validation donors only, every trainer.val_check_interval steps; each window has a fixed timestep and noise (seeded by its
+index) and the conditioning is never dropped, so the loss of two checkpoints is compared on identical inputs. checkpoints/best.ckpt (full Lightning checkpoint: weights, EMA
+weights, optimizer) is written only when val/loss_ema improves, with best.json (step, loss) and the resolved config.yaml beside it; the best loss survives resubmission (best.json).
 (lr is read from the optimizer; ddpm's own lr_abs is stale after a resume: Lightning's optimizer wrapper keeps the param groups from before the optimizer state was restored.)
 Precision: forward pass under bf16 autocast (Trainer precision "bf16"); weights, gradients and optimizer state in fp32. Batch size: data.batch_size, or the largest that fits (probed on
 rank 0 at the first start, dummy batches of 8 x 8 grids: the token count does not depend on the scale). Launch: scripts/train_gtex_uni.sbatch (stages the slides to the node's
@@ -21,7 +25,8 @@ from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_lightning.strategies import DDPStrategy
 from torch.utils.data import DataLoader, default_collate
 
-from ldm.util import instantiate_from_config
+from ldm.models.diffusion.ddpm import LatentDiffusion
+from ldm.util import get_obj_from_str, instantiate_from_config
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -97,6 +102,77 @@ def probe(model, sizes=(768, 640, 512, 448, 384, 320, 256, 192, 160, 128, 96, 64
     return chosen
 
 
+class GTExLDM(LatentDiffusion):
+    """LatentDiffusion with a deterministic held-out loss: eps MSE per window at a fixed timestep and noise (seeded by the window index), conditioning never dropped,
+    for the online and the EMA weights."""
+
+    def validation_step(self, batch, batch_idx):
+        x, c = self.get_input(batch, self.first_stage_key)
+        gens = [torch.Generator().manual_seed(int(i)) for i in batch["idx"]]
+        t = torch.stack([torch.randint(0, self.num_timesteps, (), generator=g) for g in gens]).to(self.device)
+        noise = torch.stack([torch.randn(x.shape[1:], generator=g) for g in gens]).to(self.device)
+        p_uncond = self.cond_stage_model.p_uncond
+        self.cond_stage_model.p_uncond = 0.0
+
+        def mse():
+            out = self.apply_model(self.q_sample(x, t, noise), t, self.get_learned_conditioning(c))
+            return (out.float() - noise).pow(2).mean()
+
+        try:
+            loss = mse()
+            with self.ema_scope():
+                loss_ema = mse()
+        finally:
+            self.cond_stage_model.p_uncond = p_uncond
+        self.log_dict({"val/loss": loss, "val/loss_ema": loss_ema}, on_step=False, on_epoch=True, sync_dist=True, batch_size=len(x))
+
+
+class Best(Callback):
+    """checkpoints/best.ckpt (full checkpoint) whenever val/loss_ema improves, with best.json (step, loss) and the resolved config.yaml beside it.
+    Every rank calls save_checkpoint (rank 0 writes a temporary file, then renames it); the best loss is restored from best.json and from last.ckpt."""
+
+    def __init__(self, out, cfg):
+        self.dir = out / "checkpoints"
+        self.cfg = cfg
+        self.best = float("inf")
+        self.t0 = None
+        j = self.dir / "best.json"
+        if j.exists():
+            with open(j) as f:
+                self.best = json.load(f)["loss"]
+
+    def state_dict(self):
+        return {"best": self.best}
+
+    def load_state_dict(self, state):
+        self.best = min(self.best, state["best"])
+
+    def on_validation_start(self, trainer, module):
+        self.t0 = time.time()
+
+    def on_validation_end(self, trainer, module):
+        m = trainer.callback_metrics
+        if trainer.sanity_checking or "val/loss_ema" not in m:
+            return
+        v = float(m["val/loss_ema"])
+        s = trainer.global_step
+        dt = time.time() - self.t0
+        better = v < self.best
+        if better:
+            self.best = v
+            tmp = self.dir / "best.ckpt.tmp"
+            trainer.save_checkpoint(tmp)
+            if trainer.is_global_zero:
+                tmp.rename(self.dir / "best.ckpt")
+                OmegaConf.save(self.cfg, self.dir / "config.yaml", resolve=True)
+                with open(self.dir / "best.json", "w") as f:
+                    json.dump({"step": s, "loss": v}, f)
+        if trainer.is_global_zero:
+            trainer.logger.log_metrics({"time/val_s": dt}, step=s)
+            note = ", best: saved best.ckpt" if better else ""
+            print(f"step {s}: val loss {float(m['val/loss']):.4f} ema {v:.4f}{note} ({dt:.0f} s)", flush=True)
+
+
 class Snapshots(ModelCheckpoint):
     """Weights-only snapshots beside last.ckpt (its own class: Lightning wants one state key per ModelCheckpoint)."""
 
@@ -133,6 +209,7 @@ def main():
     ap.add_argument("--config", default="configs/zoomldm_gtex_uni.yaml")
     ap.add_argument("--name", default="gtex_uni")
     ap.add_argument("--probe", action="store_true", help="probe the batch size and exit")
+    ap.add_argument("--root", default=None, help="read the slides from this directory (a staged copy); the saved configs keep the repo path")
     ap.add_argument("--set", nargs="*", default=[], help="dotlist overrides, e.g. trainer.max_steps=40 data.batch_size=16")
     a = ap.parse_args()
     cfg = OmegaConf.merge(OmegaConf.load(ROOT / a.config), OmegaConf.from_dotlist(a.set))
@@ -146,7 +223,10 @@ def main():
     if last.exists():
         step = torch.load(last, map_location="cpu", mmap=True, weights_only=False)["global_step"]
         cfg.data.train.params.config.seed += step
-    model = instantiate_from_config(cfg.model)
+    if get_obj_from_str(cfg.model.target) is LatentDiffusion:
+        model = GTExLDM(**cfg.model.params)
+    else:
+        model = instantiate_from_config(cfg.model)
     model.learning_rate = cfg.model.base_learning_rate
     if not last.exists():
         load_matching(model, cfg.init_ckpt)
@@ -167,16 +247,21 @@ def main():
     print(f"batch size {bs} per GPU", flush=True)
     if a.probe:
         return
-    dl = DataLoader(
-        instantiate_from_config(cfg.data.train),
-        batch_size=bs,
-        num_workers=cfg.data.num_workers,
-        collate_fn=collate,
-        pin_memory=True,
-        persistent_workers=True,
-        prefetch_factor=cfg.data.prefetch_factor,
-        drop_last=True,
-    )
+    def loader(d, workers, **kw):
+        if a.root:
+            d = OmegaConf.merge(d, {"params": {"config": {"root": a.root}}})
+        return DataLoader(
+            instantiate_from_config(d),
+            batch_size=bs,
+            num_workers=workers,
+            collate_fn=collate,
+            pin_memory=True,
+            persistent_workers=True,
+            **kw,
+        )
+
+    dl = loader(cfg.data.train, cfg.data.num_workers, prefetch_factor=cfg.data.prefetch_factor, drop_last=True)
+    vl = loader(cfg.data.validation, cfg.data.val_workers)
     cks = [
         ModelCheckpoint(
             dirpath=out / "checkpoints",
@@ -192,13 +277,13 @@ def main():
             train_time_interval=datetime.timedelta(minutes=t.keep_minutes),
         ),
     ]
-    n = torch.cuda.device_count()
+    n = torch.cuda.device_count() or int(os.environ.get("SLURM_NTASKS_PER_NODE", 1))  # CPU: one process per task (the CPU smoke test)
     if n > 1:
         strategy = DDPStrategy(find_unused_parameters=False)
     else:
         strategy = None
     tr = pl.Trainer(
-        accelerator="gpu",
+        accelerator="gpu" if torch.cuda.is_available() else "cpu",
         devices=n,
         num_nodes=1,
         strategy=strategy,
@@ -207,13 +292,13 @@ def main():
         max_steps=t.max_steps,
         log_every_n_steps=t.log_every_n_steps,
         logger=TensorBoardLogger(save_dir=out, name="", version="tb"),
-        callbacks=[*cks, Speed()],
-        limit_val_batches=0,
+        callbacks=[*cks, Best(out, cfg), Speed()],
+        val_check_interval=t.val_check_interval,
         num_sanity_val_steps=0,
         benchmark=True,
         enable_progress_bar=False,
     )
-    tr.fit(model, dl, ckpt_path=str(last) if last.exists() else None)
+    tr.fit(model, dl, vl, ckpt_path=str(last) if last.exists() else None)
 
 
 if __name__ == "__main__":
