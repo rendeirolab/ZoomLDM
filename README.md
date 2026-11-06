@@ -117,6 +117,23 @@ We provide the training and inference scripts for CDM in [`cdm_dit/`](./cdm_dit/
 
 Pretrained model weights for CDM are available [here](https://huggingface.co/StonyBrook-CVLab/ZoomLDM).
 
+## Healthy-tissue fine-tune
+
+Results from the [Rendeiro group](https://rendeiro.group/). The published ZoomLDM weights, trained on breast-cancer slides, were further trained on healthy tissue from the Genotype-Tissue Expression (GTEx) project, across organs. Conditioning is the UNI embedding of each patch, as in the original model. The validation loss reached 0.128 at training step 56,000.
+
+The table is the patch Fréchet Inception Distance used in the ZoomLDM paper: 10,000 generated patches at each magnification, features from an ImageNet Inception-v3. A lower value is closer to real patches. The two columns are not the same test. The published numbers are breast-cancer patches of 256 pixels. The new numbers are healthy-tissue patches of 224 pixels.
+
+| Magnification | Published (breast cancer, 256 px) | Step 6,000 | Step 21,000 | Step 36,000 |
+|---|---|---|---|---|
+| 20× | 6.77 | 17.88 | 10.49 | 9.18 |
+| 10× | 7.60 | 17.44 | 11.45 | 10.40 |
+| 5× | 7.98 | 15.54 | 11.34 | 10.55 |
+| 2.5× | 10.73 | 16.88 | 12.09 | 13.49 |
+| 1.25× | 8.74 | 17.39 | 8.70 | 9.99 |
+| 0.625× | 7.99 | 16.98 | 7.92 | 8.77 |
+| 0.3125× | 8.34 | 18.30 | 8.61 | 8.93 |
+| 0.15625× | 13.42 | 18.58 | 9.67 | 9.70 |
+
 ## Bibtex
 ```bibtex
 @InProceedings{Yellapragada_2025_CVPR,
