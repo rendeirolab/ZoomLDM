@@ -18,6 +18,9 @@ dependencies = [
 	"tqdm",
 	"tensorboard",
 	"huggingface_hub",
+	# patch FID (scripts/score_fid.py): the Inception network and Frechet distance of pytorch-fid, as listed in upstream ZoomLDM's requirements
+	"pytorch-fid",
+	"scipy>=1.16,<1.18",  # pytorch-fid 0.3.0 calls linalg.sqrtm(..., disp=False), removed in scipy 1.18
 	# scripts/check_ckpts.py instantiates the old GTEx conditioner (tissue_zoom.generators.zoomldm, aging-zoom), which imports these
 	"pandas>=2.3",
 	"openslide-python",
