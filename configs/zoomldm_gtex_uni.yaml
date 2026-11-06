@@ -80,15 +80,30 @@ data:
       config:
         root: data/gtex-uni     # the sbatch script points this at the staged copy on /local
         counts: data/gtex_counts.npz
-        slides: /home/smoustafa/Projects/aging-zoom/data/slides.csv   # donor split: training donors only (evaluation readers are fitted on the others)
+        slides: data/slides.csv   # donor split: training donors only (evaluation readers are fitted on the others)
         split: train
         feat_target_size: 8
         normalize_ssl: true
         seed: 0
         run: 64                 # consecutive samples drawn from one open slide
+  val_workers: 4
+  validation:             # held-out loss: a fixed set of windows of validation donors only (fixed t and noise per window, scripts/train_gtex_uni.py GTExLDM)
+    target: ldm.data.gtex.GTExDataset
+    params:
+      config:
+        root: data/gtex-uni
+        counts: data/gtex_counts.npz
+        slides: data/slides.csv
+        split: val
+        feat_target_size: 8
+        normalize_ssl: true
+        seed: 1000
+        run: 8
+        length: 3072            # windows; divisible by GPUs x batch (2 x 192, 4 x 192) so DDP pads nothing
 trainer:
   max_steps: 100000
   max_time: "02:22:00:00"   # DD:HH:MM:SS, under the 3-day limit of the gpu partition; a resubmitted job resumes from last.ckpt
   log_every_n_steps: 50
+  val_check_interval: 2000  # steps between held-out losses (3072 windows, two forwards each: ~0.5% of the GPU time)
   ckpt_minutes: 30          # last.ckpt (resume)
   keep_minutes: 360         # weights-only snapshots
