@@ -69,7 +69,7 @@ model:
         hidden_channels: 512
         vit_mlp_dim: 2048
         p_uncond: 0.1
-init_ckpt: /home/smoustafa/Projects/aging-zoom/data/ckpt/zoomldm_brca/weights.ckpt   # released ZoomLDM-BRCA (brca/weights.ckpt)
+init_ckpt: hf://StonyBrook-CVLab/ZoomLDM/brca/weights.ckpt   # released ZoomLDM-BRCA, from the Hugging Face hub (cached after the first download)
 data:
   batch_size: null        # per GPU; null = the largest that fits, probed at start (train_gtex_uni.py --probe), kept in runs/<name>/batch.json
   num_workers: 20
@@ -78,7 +78,7 @@ data:
     target: ldm.data.gtex.GTExDataset
     params:
       config:
-        root: data/gtex-uni     # the sbatch script points this at the staged copy on /local
+        root: data/gtex-uni     # --root points the datasets at another copy, e.g. on a local disk
         counts: data/gtex_counts.npz
         slides: data/slides.csv   # donor split: training donors only (evaluation readers are fitted on the others)
         split: train
@@ -100,6 +100,20 @@ data:
         seed: 1000
         run: 8
         length: 3072            # windows; divisible by GPUs x batch (2 x 192, 4 x 192) so DDP pads nothing
+schedule: null              # {warm_up, f_start, hold, decay, f_min}: use ldm.gtex_schedules.WarmupHoldCosine instead of scheduler_config
+ema:                        # EMA of the UNet (EmaControl): decay replaces 0.9999; reset copies the online weights into the EMA once per run
+  decay: null
+  reset: false
+freeze: []                  # parameter-name prefixes to freeze, e.g. [cond_stage_model]
+lr_range: null              # [start, end, steps]: exponential learning-rate range test instead of the schedule
+judge:                      # on-curve verdict at constant learning rate (Judge in scripts/train_gtex_uni.py)
+  enabled: false
+  block: 100                # steps per median (single-step spikes drop out)
+  every: 250
+  min_steps: 600            # constant-rate steps before the first verdict
+  window: 1500              # constant-rate steps judged
+  flat_after: 3000          # undecided this long and never eased: flat
+  stop_on_flat: false       # true: a flat verdict stops the run even after it has eased
 trainer:
   max_steps: 100000
   max_time: "02:22:00:00"   # DD:HH:MM:SS, under the 3-day limit of the gpu partition; a resubmitted job resumes from last.ckpt

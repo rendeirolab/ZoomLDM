@@ -7,3 +7,10 @@ wandb
 tmp
 ./models
 src
+*.md
+!README.md
+*.out
+/data/
+
+# training runs (checkpoints, TensorBoard event files, SLURM logs)
+runs/

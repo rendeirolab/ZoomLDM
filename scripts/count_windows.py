@@ -1,9 +1,7 @@
 """Window counts per slide and scale of the GTEx latents (ldm.data.gtex samples with them): a SLURM array counts files[task::ntasks] of data/gtex-uni into
 runs/gtex_counts/part_<task>.npz (slide (S,), n (S, 8)); --merge joins the parts into data/gtex_counts.npz and checks that every symlink has exactly one row. Prints counts only.
-  sbatch -p shortq --array=0-99 -c 1 --mem=4G -t 0:30:00 -J count-windows -o runs/gtex_counts/part_%a_%A.txt --wrap "cd $PWD && NUMPY_MADVISE_HUGEPAGE=0 PYTHONPATH=. \\
-    data/venvs/zoomldm-uni/bin/python scripts/count_windows.py --task \\$SLURM_ARRAY_TASK_ID --ntasks 100"
-  sbatch -p shortq --dependency=afterok:<array job> -c 1 --mem=4G -t 0:10:00 -J merge-counts -o runs/gtex_counts/merge_%j.txt --wrap "cd $PWD && NUMPY_MADVISE_HUGEPAGE=0 PYTHONPATH=. \\
-    data/venvs/zoomldm-uni/bin/python scripts/count_windows.py --merge --ntasks 100\""""
+  for t in $(seq 0 99); do PYTHONPATH=. python scripts/count_windows.py --task $t --ntasks 100; done   # or one SLURM array task each
+  PYTHONPATH=. python scripts/count_windows.py --merge --ntasks 100"""
 import argparse
 from pathlib import Path
 

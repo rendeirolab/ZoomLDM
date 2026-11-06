@@ -1,5 +1,5 @@
 """GTEx windows for ZoomLDM: the batch of ldm.data.brca.TCGADataset (image placeholder, vae_feat, ssl_feat, idx, mag) read from two h5 files per slide.
-UNI: <root>/<slide>.uni.h5 (data/gtex-uni, symlinks; or a staged copy on the node's local disk, scripts/stage_slides.py): feat (n, 1024) float16 of the 224-px 20x tiles,
+UNI: <root>/<slide>.uni.h5 (data/gtex-uni, symlinks; or a copy on a local disk): feat (n, 1024) float16 of the 224-px 20x tiles,
 idx (rows, cols) -> row of feat or -1, bg (1024,) = UNI of a blank tile. Latents: next to the symlink target (or in the same directory), <slide>.latB.h5: groups m0..m7
 (m = MAG_DICT value: 20x, 10x, ..., 0.15625x), lat (n, 3, 56, 56) float16 and xy (n, 2) = (col, row) of the window's top-left 20x tile; a scale-m window spans 2^m x 2^m tiles.
 ssl_feat (1024, h, h), h = min(2^m, 8): the UNI rows inside the window (bg past the slide's edge or off tissue), mean-pooled to h x h, standardised over channels per cell
@@ -79,8 +79,11 @@ class GTExDataset(Dataset):
             uni.close()
             lat.close()
         s = self.slides[a]
-        uni = h5py.File(self.root / f"{s}.uni.h5", "r")
-        self.h[a] = (uni, h5py.File(latent_path(uni.filename), "r"))
+        try:
+            uni = h5py.File(self.root / f"{s}.uni.h5", "r")
+            self.h[a] = (uni, h5py.File(latent_path(uni.filename), "r"))
+        except OSError as e:  # h5py's message carries the path, i.e. the slide id: re-raise with the slide's index only
+            raise OSError(f"slide {a} of {len(self.slides)}: cannot open its h5 files under {self.root} (errno {e.errno})") from None
         return self.h[a]
 
     def grid(self, u, i0, j0, m):
@@ -111,14 +114,18 @@ class GTExDataset(Dataset):
             self.last = (r, choice)
         return self.last[1]
 
-    def __getitem__(self, idx):
+    def pick(self, idx):
+        """(slide index, scale, window row in that scale's latents) of sample idx."""
         a = self.slide(idx)
         rng = np.random.default_rng([self.seed, int(idx)])
         if self.mag:
             m = self.m
         else:
             m = int(rng.choice(np.flatnonzero(self.n[a])))
-        r = int(rng.integers(self.n[a, m]))
+        return a, m, int(rng.integers(self.n[a, m]))
+
+    def __getitem__(self, idx):
+        a, m, r = self.pick(idx)
         uni, lat = self.files(a)
         vae = torch.from_numpy(lat[f"m{m}/lat"][r].astype(np.float32))
         i0, j0 = (int(v) for v in lat[f"m{m}/xy"][r])
